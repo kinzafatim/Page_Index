@@ -35,7 +35,7 @@ def count_tokens(text, model=None):
     return litellm.token_counter(model=model, text=text)
 
 
-def llm_completion(model, prompt, chat_history=None, return_finish_reason=False):
+def llm_completion(model, prompt, chat_history=None, return_finish_reason=False, enable_thinking=False):
     if model:
         model = model.removeprefix("litellm/")
     max_retries = 10
@@ -46,24 +46,34 @@ def llm_completion(model, prompt, chat_history=None, return_finish_reason=False)
             import time
             start_t = time.time()
             
+            request_model = model
             kwargs = {}
-            if "ollama/" in model:
+            if "ollama/" in request_model:
                 kwargs['client'] = custom_sync_client
-            elif "openai/" in model or "llamacpp/" in model:
+            elif "nvidia/" in request_model:
+                kwargs['api_base'] = "https://integrate.api.nvidia.com/v1"
+                kwargs['api_key'] = os.getenv("NVIDIA_API_KEY", "")
+                kwargs['extra_body'] = {"chat_template_kwargs":{"enable_thinking":True,"clear_thinking":False}}
+                request_model = request_model.replace('nvidia/', 'openai/')
+            elif "openai/" in request_model or "llamacpp/" in request_model:
                 # Explicitly map the tunneled port for llama.cpp OpenAI-compatible servers
                 kwargs['api_base'] = os.getenv("OPENAI_API_BASE", "http://127.0.0.1:8080/v1")
                 kwargs['api_key'] = os.getenv("OPENAI_API_KEY", "sk-fake")
+                # Control thinking per-call: ON for critical reasoning, OFF for fast JSON tasks
+                kwargs['extra_body'] = {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
             
             response = litellm.completion(
-                model=model.replace('llamacpp/', 'openai/'),
+                model=request_model.replace('llamacpp/', 'openai/'),
                 messages=messages,
-                temperature=0,
+                temperature=0.2,
                 timeout=3600,
                 **kwargs
             )
             
             print(f"[DEBUG-llm_completion] Response received in {time.time() - start_t:.2f} seconds.")
-            content = response.choices[0].message.content
+            content = response.choices[0].message.content or ""
+            print(f"[DEBUG-llm_output] Length: {len(content)} chars")
+            print(f"[DEBUG-llm_output] Preview: {content[:200]} ... {content[-200:]}")
             if return_finish_reason:
                 finish_reason = "max_output_reached" if response.choices[0].finish_reason == "length" else "finished"
                 return content, finish_reason
@@ -81,7 +91,7 @@ def llm_completion(model, prompt, chat_history=None, return_finish_reason=False)
 
 
 
-async def llm_acompletion(model, prompt):
+async def llm_acompletion(model, prompt, enable_thinking=False):
     if model:
         model = model.removeprefix("litellm/")
     max_retries = 10
@@ -92,23 +102,32 @@ async def llm_acompletion(model, prompt):
             import time
             start_t = time.time()
             
+            request_model = model
             kwargs = {}
-            if "ollama/" in model:
+            if "ollama/" in request_model:
                 kwargs['client'] = custom_async_client
-            elif "openai/" in model or "llamacpp/" in model:
+            elif "nvidia/" in request_model:
+                kwargs['api_base'] = "https://integrate.api.nvidia.com/v1"
+                kwargs['api_key'] = os.getenv("NVIDIA_API_KEY", "")
+                kwargs['extra_body'] = {"chat_template_kwargs":{"enable_thinking":True,"clear_thinking":False}}
+                request_model = request_model.replace('nvidia/', 'openai/')
+            elif "openai/" in request_model or "llamacpp/" in request_model:
                 kwargs['api_base'] = os.getenv("OPENAI_API_BASE", "http://127.0.0.1:8080/v1")
                 kwargs['api_key'] = os.getenv("OPENAI_API_KEY", "sk-fake")
-                
+                kwargs['extra_body'] = {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
             response = await litellm.acompletion(
-                model=model.replace('llamacpp/', 'openai/'),
+                model=request_model.replace('llamacpp/', 'openai/'),
                 messages=messages,
-                temperature=0,
+                temperature=0.2,
                 timeout=3600,
                 **kwargs
             )
             
             print(f"[DEBUG-llm_acompletion] Async response received in {time.time() - start_t:.2f} seconds.")
-            return response.choices[0].message.content
+            content = response.choices[0].message.content or ""
+            print(f"[DEBUG-llm_output] Length: {len(content)} chars")
+            print(f"[DEBUG-llm_output] Preview: {content[:200]} ... {content[-200:]}")
+            return content
         except Exception as e:
             print('************* Retrying *************')
             logging.error(f"Error: {e}")

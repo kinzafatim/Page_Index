@@ -249,94 +249,97 @@ def toc_index_extractor(toc, content, model=None):
 
     The structure variable is the numeric system which represents the index of the hierarchy section in the table of contents. For example, the first section has structure index 1, the first subsection has structure index 1.1, the second subsection has structure index 1.2, etc.
 
-    The response should be in the following JSON format: 
-    [
-        {
-            "structure": <structure index, "x.x.x" or None> (string),
-            "title": <title of the section>,
-            "physical_index": "<physical_index_X>" (keep the format)
-        },
-        ...
-    ]
+    The response should be in the following JSON format.
+    ```json
+    {
+        "thinking": "<step-by-step reasoning>",
+        "extracted_indices": [
+            {
+                "structure": "<structure index, 'x.x.x' or null>",
+                "title": "<title of the section>",
+                "physical_index": "<physical_index_X>"
+            }
+        ]
+    }
+    ```
 
     Only add the physical_index to the sections that are in the provided pages.
     If the section is not in the provided pages, do not add the physical_index to it.
-    Directly return the final JSON structure. Do not output anything else."""
+    Do not output any other explanation or text."""
 
     prompt = toc_extractor_prompt + '\nTable of contents:\n' + str(toc) + '\nDocument pages:\n' + content
     response = llm_completion(model=model, prompt=prompt)
-    json_content = extract_json(response)    
-    return json_content
+    json_content = extract_json(response)
+    if isinstance(json_content, dict) and 'extracted_indices' in json_content:
+        return json_content['extracted_indices']
+    elif isinstance(json_content, list):
+        return json_content
+    return []
 
 
 
 def toc_transformer(toc_content, model=None):
     print('start toc_transformer')
-    init_prompt = """
-    You are given a table of contents, You job is to transform the whole table of content into a JSON format included table_of_contents.
-
-    structure is the numeric system which represents the index of the hierarchy section in the table of contents. For example, the first section has structure index 1, the first subsection has structure index 1.1, the second subsection has structure index 1.2, etc.
-
-    The response should be in the following JSON format: 
-    {
-    table_of_contents: [
-        {
-            "structure": <structure index, "x.x.x" or None> (string),
-            "title": <title of the section>,
-            "page": <page number or None>,
-        },
-        ...
-        ],
-    }
-    You should transform the full table of contents in one go.
-    Directly return the final JSON structure, do not output anything else. """
-
-    prompt = init_prompt + '\n Given table of contents\n:' + toc_content
-    last_complete, finish_reason = llm_completion(model=model, prompt=prompt, return_finish_reason=True)
-    if_complete = check_if_toc_transformation_is_complete(toc_content, last_complete, model)
-    if if_complete == "yes" and finish_reason == "finished":
-        last_complete = extract_json(last_complete)
-        cleaned_response=convert_page_to_int(last_complete['table_of_contents'])
-        return cleaned_response
     
-    last_complete = get_json_content(last_complete)
-    attempt = 0
-    max_attempts = 5
-    while not (if_complete == "yes" and finish_reason == "finished"):
-        attempt += 1
-        if attempt > max_attempts:
-            print("WARNING: Failed to complete toc transformation beautifully. Yielding best-effort pipeline preservation!")
-            break
-        position = last_complete.rfind('}')
-        if position != -1:
-            last_complete = last_complete[:position+2]
-        prompt = f"""
-        Your task is to continue the table of contents json structure, directly output the remaining part of the json structure.
-        The response should be in the following JSON format: 
+    lines = toc_content.split('\n')
+    chunk_size = 50
+    all_toc_items = []
+    
+    init_prompt = """
+    You are given a partial table of contents. Your job is to transform this partial table of content into a JSON array included in `table_of_contents`.
 
-        The raw table of contents json structure is:
-        {toc_content}
+    The `structure` is the numeric system which represents the index of the hierarchy section in the table of contents. For example, the first section has structure index "1", the first subsection has structure index "1.1", the second subsection has structure index "1.2", etc. If no structure index is found, use null.
 
-        The incomplete transformed table of contents json structure is:
-        {last_complete}
+    EXAMPLE INPUT:
+    3.0 Die-to-Die Adapter : 43
+    3.1 Stack Multiplexing : 44
+    3.2 Link Initialization: 46
 
-        Please continue the json structure, directly output the remaining part of the json structure."""
+    EXAMPLE OUTPUT:
+    ```json
+    {
+        "thinking": "I see three items. 1. '3.0 Die-to-Die Adapter' on page 43. 2. '3.1 Stack Multiplexing' on page 44. 3. '3.2 Link Initialization' on page 46.",
+        "table_of_contents": [
+            {
+                "structure": "3.0",
+                "title": "Die-to-Die Adapter",
+                "page": 43
+            },
+            {
+                "structure": "3.1",
+                "title": "Stack Multiplexing",
+                "page": 44
+            },
+            {
+                "structure": "3.2",
+                "title": "Link Initialization",
+                "page": 46
+            }
+        ]
+    }
+    ```
 
-        new_complete, finish_reason = llm_completion(model=model, prompt=prompt, return_finish_reason=True)
+    Now, process the following partial table of contents. Do not output anything except the JSON format.
+    """
 
-        if new_complete.startswith('```json'):
-            new_complete =  get_json_content(new_complete)
-            last_complete = last_complete+new_complete
-
-        if_complete = check_if_toc_transformation_is_complete(toc_content, last_complete, model)
+    total_chunks = (len(lines) + chunk_size - 1) // chunk_size
+    for i in range(0, len(lines), chunk_size):
+        chunk = '\n'.join(lines[i:i+chunk_size])
+        if not chunk.strip():
+            continue
+            
+        print(f'Processing toc chunk {i // chunk_size + 1} / {total_chunks}')
+        prompt = init_prompt + '\n Given partial table of contents\n:' + chunk
         
-
-    last_complete_dict = extract_json(last_complete)
-    if 'table_of_contents' not in last_complete_dict:
-        print("WARNING: Fatal JSON structure breakdown detected. Sending blank mapping proxy to sustain execution.")
-        return []
-
-    cleaned_response=convert_page_to_int(last_complete_dict['table_of_contents'])
+        response = llm_completion(model=model, prompt=prompt)
+        response_json = extract_json(response)
+        
+        if 'table_of_contents' in response_json:
+            all_toc_items.extend(response_json['table_of_contents'])
+        elif isinstance(response_json, list):
+            all_toc_items.extend(response_json)
+            
+    cleaned_response = convert_page_to_int(all_toc_items)
     return cleaned_response
     
 
@@ -472,27 +475,48 @@ def add_page_number_to_toc(part, structure, model=None):
 
     If the full target section does not start in the partial given document, insert "start": "no",  "start_index": None.
 
-    The response should be in the following format. 
-        [
+    The response should be in the following JSON format.
+    ```json
+    {
+        "thinking": "<step-by-step reasoning>",
+        "extracted_indices": [
             {
-                "structure": <structure index, "x.x.x" or None> (string),
-                "title": <title of the section>,
+                "structure": "<structure index, 'x.x.x' or null>",
+                "title": "<title of the section>",
                 "start": "<yes or no>",
-                "physical_index": "<physical_index_X> (keep the format)" or None
-            },
-            ...
-        ]    
+                "physical_index": "<physical_index_X> or null"
+            }
+        ]
+    }
+    ```
     The given structure contains the result of the previous part, you need to fill the result of the current part, do not change the previous result.
-    Directly return the final JSON structure. Do not output anything else."""
+    Do not output any other explanation or text."""
 
     prompt = fill_prompt_seq + f"\n\nCurrent Partial Document:\n{part}\n\nGiven Structure\n{json.dumps(structure, indent=2)}\n"
-    current_json_raw = llm_completion(model=model, prompt=prompt)
-    json_result = extract_json(current_json_raw)
+    is_dict = isinstance(structure, dict)
+    structure_list = [structure] if is_dict else structure
     
-    for item in json_result:
-        if 'start' in item:
-            del item['start']
-    return json_result
+    chunk_size = 20
+    all_results = []
+    
+    for i in range(0, len(structure_list), chunk_size):
+        chunk = structure_list[i:i+chunk_size]
+        prompt = fill_prompt_seq + f"\n\nCurrent Partial Document:\n{part}\n\nGiven Structure\n{json.dumps(chunk, indent=2)}\n"
+        current_json_raw = llm_completion(model=model, prompt=prompt)
+        json_result = extract_json(current_json_raw)
+        
+        if isinstance(json_result, dict) and 'extracted_indices' in json_result:
+            json_result = json_result['extracted_indices']
+        
+        if isinstance(json_result, dict):
+            json_result = [json_result]
+            
+        for item in json_result:
+            if 'start' in item:
+                del item['start']
+        all_results.extend(json_result)
+        
+    return all_results
 
 
 def remove_first_physical_index_section(text):
@@ -634,7 +658,7 @@ def process_toc_with_page_numbers(toc_content, toc_page_list, page_list, toc_che
     for page_index in range(start_page_index, min(start_page_index + toc_check_page_num, len(page_list))):
         main_content += f"<physical_index_{page_index+1}>\n{page_list[page_index][0]}\n<physical_index_{page_index+1}>\n\n"
 
-    toc_with_physical_index = toc_index_extractor(toc_no_page_number, main_content, model)
+    toc_with_physical_index = toc_index_extractor(toc_no_page_number[:20], main_content, model)
     logger.info(f'toc_with_physical_index: {toc_with_physical_index}')
 
     toc_with_physical_index = convert_physical_index_to_int(toc_with_physical_index)
