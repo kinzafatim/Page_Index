@@ -185,45 +185,60 @@ def extract_json(content):
         logging.error(f"Unexpected error while extracting JSON: {e}")
         return {}
 
-def write_node_id(data, node_id=0, parent_id=None):
-    """Assign hierarchical N-ary tree node IDs.
-
-    Root nodes (parent_id is None) receive a sequential 4-digit zero-padded
-    ID (e.g. "0000", "0001", ...).  Every child node receives an ID formed by
-    concatenating its parent's ID, a dot, and the child's 1-based position
-    among its siblings (e.g. "0001.1", "0001.2", "0001.1.1").
-
-    The *node_id* parameter is only used for root-level sequential numbering
-    and is returned so callers that chain multiple calls still work correctly.
+def get_dynamic_k(data):
     """
+    Scans the entire TOC hierarchy
+    Determines the maximum number of children any node contains
+    Dynamically scales k to the nearest power of 10
+    """
+    max_children = 0
+    def scan(node):
+        nonlocal max_children
+        if isinstance(node, dict):
+            children = node.get('nodes', [])
+            if len(children) > max_children:
+                max_children = len(children)
+            for child in children:
+                scan(child)
+        elif isinstance(node, list):
+            if len(node) > max_children:
+                max_children = len(node)
+            for item in node:
+                scan(item)
+    
+    scan(data)
+    
+    if max_children <= 10:
+        return 10
+        
+    import math
+    return int(10 ** math.ceil(math.log10(max_children)))
+
+def write_node_id(data, k=None, parent_id=1):
+    """Assign hierarchical N-ary tree node IDs.
+    Child ID = k * (i - 1) + (n + 1)
+    """
+    if k is None:
+        k = get_dynamic_k(data)
+
     if isinstance(data, dict):
-        # Assign the ID for this node
-        if parent_id is None:
-            # Root level: use zero-padded sequential counter
-            current_id = str(node_id).zfill(4)
-            node_id += 1
-        else:
-            # Non-root: ID was already computed by the parent and passed in
-            current_id = parent_id
-
-        data['node_id'] = current_id
-
-        # Recurse into children, giving each child its positional ID
-        for key in list(data.keys()):
-            if 'nodes' in key:
-                node_id = write_node_id(data[key], node_id, parent_id=current_id)
+        if 'node_id' not in data:
+            data['node_id'] = k * (parent_id - 1) + 2
+        if 'nodes' in data and data['nodes']:
+            write_node_id(data['nodes'], k=k, parent_id=data['node_id'])
 
     elif isinstance(data, list):
         for index, item in enumerate(data):
-            if parent_id is None:
-                # Top-level list: each element is a root node
-                node_id = write_node_id(item, node_id, parent_id=None)
-            else:
-                # Child list: position is 1-based
-                child_id = f"{parent_id}.{index + 1}"
-                node_id = write_node_id(item, node_id, parent_id=child_id)
+            n = index + 1
+            i = parent_id
+            child_id = k * (i - 1) + (n + 1)
+            
+            if isinstance(item, dict):
+                item['node_id'] = child_id
+                if 'nodes' in item and item['nodes']:
+                    write_node_id(item['nodes'], k=k, parent_id=child_id)
 
-    return node_id
+    return k
 
 def get_nodes(structure):
     if isinstance(structure, dict):
